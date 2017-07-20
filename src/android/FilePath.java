@@ -1,5 +1,10 @@
 package com.hiddentao.cordova.filepath;
 
+import java.io.InputStream;
+import java.io.IOException;
+import java.io.FileNotFoundException;
+import java.io.OutputStream;
+import java.io.FileOutputStream;
 
 import android.content.ContentUris;
 import android.content.Context;
@@ -71,7 +76,7 @@ public class FilePath extends CordovaPlugin {
             else if (filePath.equals(GET_CLOUD_PATH_ERROR_ID)) {
                 resultObj.put("code", GET_CLOUD_PATH_ERROR_CODE);
                 resultObj.put("message", "Files from cloud cannot be resolved to filesystem, download is required.");
-                
+
                 callbackContext.error(resultObj);
             }
             else {
@@ -85,7 +90,7 @@ public class FilePath extends CordovaPlugin {
         else {
             resultObj.put("code", INVALID_ACTION_ERROR_CODE);
             resultObj.put("message", "Invalid action.");
-            
+
             callbackContext.error(resultObj);
         }
 
@@ -145,20 +150,77 @@ public class FilePath extends CordovaPlugin {
      * @return The value of the _data column, which is typically a file path.
      */
     private static String getDataColumn(Context context, Uri uri, String selection,
-                                       String[] selectionArgs) {
+                                        String[] selectionArgs) {
 
         Cursor cursor = null;
         final String column = "_data";
-        final String[] projection = {
-                column
-        };
+        final String[] projection = {column, "_display_name"};
 
         try {
-            cursor = context.getContentResolver().query(uri, projection, selection, selectionArgs,
-                    null);
+            /* get `_data` */
+            cursor = context.getContentResolver().query(uri, projection, selection, selectionArgs, null);
             if (cursor != null && cursor.moveToFirst()) {
                 final int column_index = cursor.getColumnIndexOrThrow(column);
-                return cursor.getString(column_index);
+                /* bingo! */
+                final String filepath = cursor.getString(column_index);
+                if (filepath == null) {
+                    throw new Exception("Looks like a GDrive file...");
+                }
+                return filepath;
+            }
+        } catch(Exception e) {
+            Log.e(TAG, e.toString());
+
+            final int column_index = cursor.getColumnIndexOrThrow("_display_name");
+            final String displayName = cursor.getString(column_index);
+            Log.d(TAG, "displayName: " + displayName);
+
+            InputStream input = null;
+            try {
+                input = context.getContentResolver().openInputStream(uri);
+            /* save stream to temp file */
+                try {
+                    File file = new File(context.getCacheDir(), displayName);
+                    OutputStream output = new FileOutputStream(file);
+                    try {
+                        try {
+                            byte[] buffer = new byte[4 * 1024]; // or other buffer size
+                            int read;
+
+                            while ((read = input.read(buffer)) != -1) {
+                                output.write(buffer, 0, read);
+                            }
+                            output.flush();
+
+                            final String outputPath = file.getAbsolutePath();
+                            Log.d(TAG, "output success in " + outputPath);
+                            return outputPath;
+
+                        } finally {
+                            output.close();
+                        }
+                    } catch (Exception e1a) {
+                        e1a.printStackTrace(); // handle exception, define IOException and others
+                    }
+                } finally {
+                    try {
+                        input.close();
+                    } catch (IOException e1b) {
+                        Log.e(TAG, "could not close stream", e1b);
+                    }
+                }
+
+            } catch (FileNotFoundException e2) {
+                Log.e(TAG, "file not found: " + uri, e2);
+            }
+            finally {
+                if (input != null) {
+                    try {
+                        input.close();
+                    } catch (IOException e3) {
+                        Log.e(TAG, "could not close stream", e3);
+                    }
+                }
             }
         } finally {
             if (cursor != null)
@@ -219,7 +281,7 @@ public class FilePath extends CordovaPlugin {
                 return fullPath;
             }
         }
-    
+
         // Environment.isExternalStorageRemovable() is `true` for external and internal storage
         // so we cannot relay on it.
         //
@@ -253,18 +315,19 @@ public class FilePath extends CordovaPlugin {
 
         Log.d(TAG, "File - " +
                 "Authority: " + uri.getAuthority() +
-                        ", Fragment: " + uri.getFragment() +
-                        ", Port: " + uri.getPort() +
-                        ", Query: " + uri.getQuery() +
-                        ", Scheme: " + uri.getScheme() +
-                        ", Host: " + uri.getHost() +
-                        ", Segments: " + uri.getPathSegments().toString()
+                ", Fragment: " + uri.getFragment() +
+                ", Port: " + uri.getPort() +
+                ", Query: " + uri.getQuery() +
+                ", Scheme: " + uri.getScheme() +
+                ", Host: " + uri.getHost() +
+                ", Segments: " + uri.getPathSegments().toString()
         );
 
         final boolean isKitKat = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT;
 
         // DocumentProvider
         if (isKitKat && DocumentsContract.isDocumentUri(context, uri)) {
+
             // ExternalStorageProvider
             if (isExternalStorageDocument(uri)) {
                 final String docId = DocumentsContract.getDocumentId(uri);
@@ -281,7 +344,6 @@ public class FilePath extends CordovaPlugin {
             }
             // DownloadsProvider
             else if (isDownloadsDocument(uri)) {
-
                 final String id = DocumentsContract.getDocumentId(uri);
                 final Uri contentUri = ContentUris.withAppendedId(
                         Uri.parse("content://downloads/public_downloads"), Long.valueOf(id));
@@ -311,12 +373,11 @@ public class FilePath extends CordovaPlugin {
                 return getDataColumn(context, contentUri, selection, selectionArgs);
             }
             else if (isGoogleDriveUri(uri)) {
-                return "cloud";
+                return getDataColumn(context, uri, null, null);
             }
         }
         // MediaStore (and general)
         else if ("content".equalsIgnoreCase(uri.getScheme())) {
-
             // Return the remote address
             if (isGooglePhotosUri(uri)) {
                 String contentPath = getContentFromSegments(uri.getPathSegments());
